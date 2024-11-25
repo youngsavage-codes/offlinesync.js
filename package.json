@@ -2,7 +2,8 @@
   "name": "offlinesync",
   "version": "1.0.0",
   "description": "Why OfflineSync.js? In today's connected world, users expect apps to work seamlessly, even without an internet connection. OfflineSync.js empowers developers to create offline-first applications, ensuring that data is queued and synced reliably when connectivity is restored.",
-  "main": "index.js",
+  "main": "/dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "build": "rollup -c",
     "watch": "rollup -c -w"
