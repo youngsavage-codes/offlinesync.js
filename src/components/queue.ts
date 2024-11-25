@@ -1,11 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
 
-interface Action {
-  type: string;
-  data: any;
-  timestamp: number;
-  id: string;
-}
 
 class Queue {
   private queue: Action[] = [];

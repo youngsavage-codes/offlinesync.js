@@ -57,7 +57,7 @@ offlineSync.addAction({
 To sync queued actions, simply use the sync() method:
 
 ```tsx
-offlineSync.sync();
+offlineSync.startSync();
 ```
 This will sync the queued actions once the device is online, and successfully synced actions will be removed from the queue.
 
@@ -65,7 +65,7 @@ This will sync the queued actions once the device is online, and successfully sy
 You can retrieve the current actions in the queue:
 
 ```tsx
-const queue = offlineSync.queue.get();
+const queue = offlineSync.getQueuedActions()
 console.log(queue); // Output: Array of actions in the queue
 ```
 
@@ -73,12 +73,12 @@ console.log(queue); // Output: Array of actions in the queue
 You can remove an individual action from the queue by its ID:
 
 ```tsx
-offlineSync.queue.remove('task-1'); // Remove specific action
+offlineSync.removeActionFromQueue('id'); // Remove specific action
 ```
 
 To clear all actions from the queue:
 ```tsx
-offlineSync.queue.clear(); // Clear entire queue
+offlineSync.clearQueuedAction() // Clear entire queue
 ```
 
 ## Sync Strategies
@@ -159,16 +159,18 @@ const queueItem = (cartItem: CartItemType) => {
 When the app comes online, queued items are sent to the server, and the queue is cleared for synced actions.
 
 ```tsx
-const sendQueuedItems = async () => {
-  const queuedActions = offlineSync.queue?.get() || [];
+  const sendQueuedItems = async () => {
+    if (!offlineSync) return;
 
-  for (const action of queuedActions) {
-    await processItem(action.data);
-    offlineSync.queue?.remove(action.id);
-  }
-
-  updateQueue();
-};
+    const queuedActions = offlineSync.getQueuedActions()
+    for (const action of queuedActions) {
+      if (isCartItem(action.data)) {
+        await processItem(action.data);
+        offlineSync.removeActionFromQueue(action.id);
+      }
+    }
+    updateQueue();
+  };
 ```
 
 **5. Conflict Resolution**
@@ -184,32 +186,58 @@ const syncInstance = new OfflineSync({
 **ShoppingCart.tsx**
 
 ```tsx
+// shoppingCart.tsx
 'use client';
 import React, { useState, useEffect } from 'react';
-import OfflineSync from 'offlinesync';
-import CartItem from './component/shopping/CartItem';
+import CartItem from './component/shopping/CartItems';
 import QueueList from './component/shopping/QueueList';
 import AddToCartButton from './component/shopping/AddToCartButton';
+import OfflineSync from 'offlinesync';
+
+
+type CartItemType = {
+  id: number;
+  name: string;
+  quantity: number;
+  price: number;
+  status: 'pending' | 'sent';
+};
 
 const ShoppingCart = () => {
   const [offlineSync, setOfflineSync] = useState<OfflineSync | null>(null);
-  const [status, setStatus] = useState('Offline');
-  const [cartItems, setCartItems] = useState([]);
-  const [queuedItems, setQueuedItems] = useState([]);
+  const [status, setStatus] = useState<string>('Offline');
+  const [cartItems, setCartItems] = useState<CartItemType[]>([]);
+  const [queuedItems, setQueuedItems] = useState<CartItemType[]>([]);
 
   useEffect(() => {
     const syncInstance = new OfflineSync({ maxQueueSize: 10, conflictStrategy: 'latest' });
     setOfflineSync(syncInstance);
 
     const interval = setInterval(() => {
-      setStatus(syncInstance.onlineStatus ? 'Online' : 'Offline');
+      if (syncInstance) {
+        setStatus(syncInstance.onlineStatus ? 'Online' : 'Offline');
+      }
     }, 1000);
 
     return () => clearInterval(interval);
   }, []);
 
-  const addItemToCart = async (name, price) => {
-    const cartItem = { id: Date.now(), name, quantity: 1, price, status: 'pending' };
+  const updateQueue = () => {
+    if (offlineSync) {
+      const queuedActions = offlineSync.getQueuedActions()
+      const queuedCartItems = queuedActions
+        .map((action) => action?.data)
+        .filter((data) => isCartItem(data)); 
+      setQueuedItems(queuedCartItems); 
+    }
+  };
+
+  const isCartItem = (data: any): data is CartItemType => {
+    return data && typeof data.id === 'number' && typeof data.name === 'string';
+  };
+
+  const addItemToCart = async (name: string, price: number) => {
+    const cartItem: CartItemType = { id: Date.now(), name, quantity: 1, price, status: 'pending' };
     setCartItems((prev) => [...prev, cartItem]);
 
     if (offlineSync?.onlineStatus) {
@@ -219,7 +247,8 @@ const ShoppingCart = () => {
     }
   };
 
-  const queueItem = (cartItem) => {
+  const queueItem = (cartItem: CartItemType) => {
+    if (!offlineSync) return;
     offlineSync?.addAction({
       type: 'ADD_ITEM',
       data: cartItem,
@@ -229,7 +258,7 @@ const ShoppingCart = () => {
     updateQueue();
   };
 
-  const processItem = async (cartItem) => {
+  const processItem = async (cartItem: CartItemType) => {
     try {
       const response = await fetch('https://jsonplaceholder.typicode.com/posts', {
         method: 'POST',
@@ -237,50 +266,72 @@ const ShoppingCart = () => {
         body: JSON.stringify(cartItem),
       });
       const data = await response.json();
-      console.log('Processed:', data);
+      console.log('Item processed:', data);
     } catch (error) {
       console.error('Error processing item:', error);
     }
   };
 
-  const updateQueue = () => {
-    const queuedActions = offlineSync.queue?.get() || [];
-    const queuedCartItems = queuedActions.map((action) => action.data);
-    setQueuedItems(queuedCartItems);
-  };
-
   const sendQueuedItems = async () => {
-    const queuedActions = offlineSync.queue?.get() || [];
+    if (!offlineSync) return;
+
+    const queuedActions = offlineSync.getQueuedActions()
     for (const action of queuedActions) {
-      await processItem(action.data);
-      offlineSync.queue?.remove(action.id);
+      if (isCartItem(action.data)) {
+        await processItem(action.data);
+        offlineSync.removeActionFromQueue(action.id);
+      }
     }
     updateQueue();
+  };
+
+  const clearQueue = () => {
+    if (offlineSync) {
+      offlineSync.clearQueuedAction()
+      setQueuedItems([]); 
+    }
   };
 
   useEffect(() => {
     if (status === 'Online') {
       sendQueuedItems();
     }
-  }, [status]);
+  }, [status, offlineSync]);
+
+  useEffect(() => {
+    updateQueue();
+  }, [offlineSync]);
 
   return (
     <div>
       <h1>Shopping Cart</h1>
       <p>Status: {status}</p>
+
       <AddToCartButton addItemToCart={addItemToCart} />
+
       <div>
         <h2>Your Cart</h2>
-        {cartItems.map((item) => (
-          <CartItem key={item.id} item={item} />
-        ))}
+        {cartItems.length > 0 ? (
+          cartItems.map((item) => (
+            <CartItem key={item.id} item={item} />
+          ))
+        ) : (
+          <p>Your cart is empty</p>
+        )}
       </div>
+
+        
       <QueueList queuedItems={queuedItems} />
+
+      <div>
+        <button onClick={clearQueue}>Clear Queue</button>
+      </div>
     </div>
   );
 };
 
 export default ShoppingCart;
+
 ```
 
 ### Additional Components

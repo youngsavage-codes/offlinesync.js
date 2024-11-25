@@ -14,6 +14,9 @@ declare class OfflineSync {
     private handleOfflineStatus;
     addAction(action: any): void;
     startSync(): void;
+    getQueuedActions(): Action[];
+    removeActionFromQueue(actionId: string): void;
+    clearQueuedAction(): void;
     processQueue(): void;
     resolveConflict(localAction: any, remoteAction: any): any;
     destroy(): void;

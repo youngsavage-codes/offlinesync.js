@@ -1,9 +1,3 @@
-interface Action {
-    type: string;
-    data: any;
-    timestamp: number;
-    id: string;
-}
 declare class Queue {
     private queue;
     private maxQueueSize;

@@ -391,6 +391,31 @@ var OfflineSync = /** @class */function () {
       console.log('Offline. Queuing actions.');
     }
   };
+  OfflineSync.prototype.getQueuedActions = function () {
+    var _a;
+    var queued = ((_a = this.queue) === null || _a === void 0 ? void 0 : _a.get()) || [];
+    return queued;
+  };
+  OfflineSync.prototype.removeActionFromQueue = function (actionId) {
+    if (!this.queue) {
+      console.error('Queue is not initialized.');
+      return;
+    }
+    this.queue.remove(actionId);
+    // Save the updated queue to localStorage after removing the action
+    Storage.save('offlineActions', this.queue.get());
+    console.log("Action with ID ".concat(actionId, " has been removed from the queue."));
+  };
+  OfflineSync.prototype.clearQueuedAction = function () {
+    if (!this.queue) {
+      console.error('Queue is not initialized.');
+      return;
+    }
+    this.queue.clear();
+    // Clear the queue in localStorage
+    Storage.save('offlineActions', []);
+    console.log('All actions have been cleared from the queue.');
+  };
   // Process the queue manually
   OfflineSync.prototype.processQueue = function () {
     if (this.onlineStatus) {
