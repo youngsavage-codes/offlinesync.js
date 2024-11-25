@@ -81,7 +81,42 @@ typeof SuppressedError === "function" ? SuppressedError : function (error, suppr
     return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
 };
 
-// src/queue.ts
+const byteToHex = [];
+for (let i = 0; i < 256; ++i) {
+  byteToHex.push((i + 0x100).toString(16).slice(1));
+}
+function unsafeStringify(arr, offset = 0) {
+  return (byteToHex[arr[offset + 0]] + byteToHex[arr[offset + 1]] + byteToHex[arr[offset + 2]] + byteToHex[arr[offset + 3]] + '-' + byteToHex[arr[offset + 4]] + byteToHex[arr[offset + 5]] + '-' + byteToHex[arr[offset + 6]] + byteToHex[arr[offset + 7]] + '-' + byteToHex[arr[offset + 8]] + byteToHex[arr[offset + 9]] + '-' + byteToHex[arr[offset + 10]] + byteToHex[arr[offset + 11]] + byteToHex[arr[offset + 12]] + byteToHex[arr[offset + 13]] + byteToHex[arr[offset + 14]] + byteToHex[arr[offset + 15]]).toLowerCase();
+}
+
+let getRandomValues;
+const rnds8 = new Uint8Array(16);
+function rng() {
+  if (!getRandomValues) {
+    if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
+      throw new Error('crypto.getRandomValues() not supported. See https://github.com/uuidjs/uuid#getrandomvalues-not-supported');
+    }
+    getRandomValues = crypto.getRandomValues.bind(crypto);
+  }
+  return getRandomValues(rnds8);
+}
+
+const randomUUID = typeof crypto !== 'undefined' && crypto.randomUUID && crypto.randomUUID.bind(crypto);
+var native = {
+  randomUUID
+};
+
+function v4(options, buf, offset) {
+  if (native.randomUUID && !buf && !options) {
+    return native.randomUUID();
+  }
+  options = options || {};
+  const rnds = options.random || (options.rng || rng)();
+  rnds[6] = rnds[6] & 0x0f | 0x40;
+  rnds[8] = rnds[8] & 0x3f | 0x80;
+  return unsafeStringify(rnds);
+}
+
 var Queue = /** @class */function () {
   function Queue(config) {
     if (config === void 0) {
@@ -94,22 +129,41 @@ var Queue = /** @class */function () {
   }
   // Add an action to the queue
   Queue.prototype.add = function (action) {
+    if (!action.id) {
+      action.id = "".concat(action.type, "-").concat(Date.now(), "-").concat(v4()); // Generate unique ID
+    }
+    // Check for duplicate actions
+    var exists = this.queue.some(function (existingAction) {
+      return existingAction.id === action.id || existingAction.type === action.type && JSON.stringify(existingAction.data) === JSON.stringify(action.data);
+    });
+    if (exists) {
+      console.warn("Duplicate action detected: ".concat(action.id));
+      return;
+    }
+    // Maintain max queue size
     if (this.queue.length >= this.maxQueueSize) {
-      this.queue.shift(); // Remove the oldest action if the queue exceeds the max size
+      this.queue.shift();
     }
     this.queue.push(action);
   };
-  // Retrieve all queued actions
+  // Get all queued actions
   Queue.prototype.get = function () {
-    return __spreadArray([], this.queue, true); // Return a copy of the queue to avoid direct mutation
+    return __spreadArray([], this.queue, true); // Return a copy to avoid mutation
   };
-  // Remove an action from the queue by its ID
+  // Replace the queue with new actions
+  Queue.prototype.set = function (actions) {
+    if (actions.length > this.maxQueueSize) {
+      actions = actions.slice(0, this.maxQueueSize); // Truncate if necessary
+    }
+    this.queue = actions;
+  };
+  // Remove action by ID
   Queue.prototype.remove = function (actionId) {
     this.queue = this.queue.filter(function (action) {
       return action.id !== actionId;
     });
   };
-  // Clear all actions in the queue
+  // Clear all actions
   Queue.prototype.clear = function () {
     this.queue = [];
   };
@@ -124,46 +178,24 @@ var Queue = /** @class */function () {
   return Queue;
 }();
 
-// src/storage.ts
 var Storage = /** @class */function () {
   function Storage() {}
-  // Save data to localStorage (or any other persistence layer)
-  Storage.save = function (key, value) {
-    try {
-      var stringValue = JSON.stringify(value);
-      localStorage.setItem(key, stringValue);
-    } catch (error) {
-      console.error('Error saving to localStorage', error);
-    }
-  };
-  // Retrieve data from localStorage
+  // Load data from localStorage by key
   Storage.load = function (key) {
-    try {
-      var value = localStorage.getItem(key);
-      if (value) {
-        return JSON.parse(value);
-      }
-      return null;
-    } catch (error) {
-      console.error('Error loading from localStorage', error);
-      return null;
-    }
+    var data = localStorage.getItem(key);
+    return data ? JSON.parse(data) : null;
   };
-  // Clear data from localStorage
-  Storage.clear = function (key) {
-    try {
-      localStorage.removeItem(key);
-    } catch (error) {
-      console.error('Error clearing from localStorage', error);
-    }
+  // Save data to localStorage under a key
+  Storage.save = function (key, value) {
+    localStorage.setItem(key, JSON.stringify(value));
   };
-  // Clear all localStorage data
-  Storage.clearAll = function () {
-    try {
-      localStorage.clear();
-    } catch (error) {
-      console.error('Error clearing all localStorage data', error);
-    }
+  // Remove an item from localStorage by key
+  Storage.remove = function (key) {
+    localStorage.removeItem(key);
+  };
+  // Clear all data from localStorage
+  Storage.clear = function () {
+    localStorage.clear();
   };
   return Storage;
 }();
@@ -171,45 +203,81 @@ var Storage = /** @class */function () {
 var Sync = /** @class */function () {
   function Sync(queue) {
     this.queue = queue;
+    this.onSyncSuccess = null;
+    this.onSyncError = null;
   }
-  // Start syncing the actions from the queue
+  // Set success callback
+  Sync.prototype.setSyncSuccessCallback = function (callback) {
+    this.onSyncSuccess = callback;
+  };
+  // Set error callback
+  Sync.prototype.setSyncErrorCallback = function (callback) {
+    this.onSyncError = callback;
+  };
+  // Start syncing the actions
   Sync.prototype.start = function () {
     return __awaiter(this, void 0, void 0, function () {
-      var actions, _i, actions_1, action, error_1;
-      return __generator(this, function (_a) {
-        switch (_a.label) {
+      var actions, syncedActions, failedActions, _i, actions_1, action, error_1, error, error_2;
+      var _a;
+      return __generator(this, function (_b) {
+        switch (_b.label) {
           case 0:
             actions = this.queue.get();
             if (actions.length === 0) {
               console.log('No actions to sync.');
               return [2 /*return*/];
             }
-            _a.label = 1;
+            syncedActions = [];
+            failedActions = [];
+            _b.label = 1;
           case 1:
-            _a.trys.push([1, 6,, 7]);
+            _b.trys.push([1, 9,, 10]);
             _i = 0, actions_1 = actions;
-            _a.label = 2;
+            _b.label = 2;
           case 2:
-            if (!(_i < actions_1.length)) return [3 /*break*/, 5];
+            if (!(_i < actions_1.length)) return [3 /*break*/, 8];
             action = actions_1[_i];
-            // Simulating API call or syncing with the server
-            return [4 /*yield*/, this.syncAction(action)];
+            _b.label = 3;
           case 3:
-            // Simulating API call or syncing with the server
-            _a.sent();
-            console.log("Action synced: ".concat(action.type));
-            this.queue.clear(); // Clear queue after successful sync
-            _a.label = 4;
+            _b.trys.push([3, 6,, 7]);
+            // Simulate API call for syncing
+            return [4 /*yield*/, this.syncAction(action)];
           case 4:
-            _i++;
-            return [3 /*break*/, 2];
+            // Simulate API call for syncing
+            _b.sent();
+            console.log("Action synced: ".concat(action.type));
+            return [4 /*yield*/, syncedActions.push(action)];
           case 5:
+            _b.sent();
+            (_a = this.queue) === null || _a === void 0 ? void 0 : _a.remove(action.id);
             return [3 /*break*/, 7];
           case 6:
-            error_1 = _a.sent();
-            console.error('Sync failed:', error_1);
+            error_1 = _b.sent();
+            console.error("Failed to sync action: ".concat(action.type, ". Error: ").concat(error_1.message));
+            failedActions.push(action);
             return [3 /*break*/, 7];
           case 7:
+            _i++;
+            return [3 /*break*/, 2];
+          case 8:
+            // Update the queue with failed actions
+            this.queue.set(failedActions);
+            if (failedActions.length > 0 && this.onSyncError) {
+              error = new Error('Some actions failed to sync');
+              this.onSyncError(error, failedActions);
+            }
+            if (syncedActions.length > 0 && this.onSyncSuccess) {
+              this.onSyncSuccess(syncedActions);
+            }
+            return [3 /*break*/, 10];
+          case 9:
+            error_2 = _b.sent();
+            console.error('Unexpected error during sync:', error_2);
+            if (this.onSyncError) {
+              this.onSyncError(error_2, actions);
+            }
+            return [3 /*break*/, 10];
+          case 10:
             return [2 /*return*/];
         }
       });
@@ -219,11 +287,13 @@ var Sync = /** @class */function () {
   Sync.prototype.syncAction = function (action) {
     return __awaiter(this, void 0, void 0, function () {
       return __generator(this, function (_a) {
-        return [2 /*return*/, new Promise(function (resolve) {
+        return [2 /*return*/, new Promise(function (resolve, reject) {
           setTimeout(function () {
-            // Simulate an API request
-            console.log("Syncing action: ".concat(action.type));
-            resolve();
+            if (Math.random() > 0.8) {
+              reject(new Error('Simulated network or server issue'));
+            } else {
+              resolve();
+            }
           }, 1000);
         })];
       });
@@ -232,33 +302,45 @@ var Sync = /** @class */function () {
   return Sync;
 }();
 
-// src/conflict.ts
 var LatestActionStrategy = /** @class */function () {
   function LatestActionStrategy() {}
   LatestActionStrategy.prototype.resolve = function (localAction, remoteAction) {
-    // Resolve conflict by choosing the latest action (based on timestamp)
     return localAction.timestamp > remoteAction.timestamp ? localAction : remoteAction;
   };
   return LatestActionStrategy;
 }();
 
-// src/utils.ts
-// Check if the device is online
 function isOnline() {
   return navigator.onLine;
 }
-// Get the current timestamp
 function getCurrentTimestamp() {
   return Date.now();
 }
 
-// src/index.ts
 var OfflineSync = /** @class */function () {
   function OfflineSync(config) {
     var _this = this;
+    this.statusCheckInterval = null;
+    // Handle status changes
+    this.handleStatusChange = function (status) {
+      if (_this.onlineStatus !== status) {
+        _this.onlineStatus = status;
+        console.log('Online Status Changed:', _this.onlineStatus ? 'Online' : 'Offline');
+        if (_this.onlineStatus) {
+          _this.startSync();
+        }
+      }
+    };
+    this.handleOnlineStatus = function () {
+      return _this.handleStatusChange(true);
+    };
+    this.handleOfflineStatus = function () {
+      return _this.handleStatusChange(false);
+    };
     this.queue = new Queue(config);
     this.sync = new Sync(this.queue);
     this.conflictResolution = new LatestActionStrategy();
+    this.onlineStatus = isOnline(); // Set initial online status
     // Load the queue from localStorage if there are any saved actions
     var savedActions = Storage.load('offlineActions');
     if (savedActions) {
@@ -266,7 +348,29 @@ var OfflineSync = /** @class */function () {
         return _this.queue.add(action);
       });
     }
+    // Attach sync success callback
+    this.sync.setSyncSuccessCallback(function (syncedActions) {
+      console.log('Sync completed successfully:', syncedActions);
+      // Remove successfully synced actions and update localStorage
+      syncedActions.forEach(function (action) {
+        return _this.queue.remove(action.id);
+      });
+      Storage.save('offlineActions', _this.queue.get()); // Sync queue to localStorage
+    });
+    // Start detecting the status automatically
+    this.detectStatus();
+    // Listen for manual online/offline status changes
+    window.addEventListener('online', this.handleOnlineStatus);
+    window.addEventListener('offline', this.handleOfflineStatus);
   }
+  // Detect and update online status every second
+  OfflineSync.prototype.detectStatus = function () {
+    var _this = this;
+    this.statusCheckInterval = setInterval(function () {
+      var currentStatus = isOnline();
+      _this.handleStatusChange(currentStatus);
+    }, 1000);
+  };
   // Add an action to the queue and save to localStorage
   OfflineSync.prototype.addAction = function (action) {
     var timestamp = getCurrentTimestamp();
@@ -278,15 +382,35 @@ var OfflineSync = /** @class */function () {
   };
   // Start the syncing process
   OfflineSync.prototype.startSync = function () {
-    if (isOnline()) {
-      this.sync.start();
+    if (this.onlineStatus) {
+      this.sync.start().catch(function (err) {
+        console.error('Sync process failed:', err);
+      });
+      console.log('Sync process started - Online');
     } else {
       console.log('Offline. Queuing actions.');
+    }
+  };
+  // Process the queue manually
+  OfflineSync.prototype.processQueue = function () {
+    if (this.onlineStatus) {
+      this.startSync();
+    } else {
+      console.log('Offline. Actions are in the queue.');
     }
   };
   // Resolve conflicts between local and remote actions
   OfflineSync.prototype.resolveConflict = function (localAction, remoteAction) {
     return this.conflictResolution.resolve(localAction, remoteAction);
+  };
+  // Cleanup resources when the object is destroyed
+  OfflineSync.prototype.destroy = function () {
+    if (this.statusCheckInterval) {
+      clearInterval(this.statusCheckInterval); // Stop the status checking interval
+    }
+    window.removeEventListener('online', this.handleOnlineStatus);
+    window.removeEventListener('offline', this.handleOfflineStatus);
+    console.log('OfflineSync instance destroyed.');
   };
   return OfflineSync;
 }();
